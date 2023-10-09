@@ -1,0 +1,318 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  Template to create a Monitron Kinesis stream pipeline
+# ============================================================================
+# CLOUDFORMATION TEMPLATE PARAMETERS
+# These parameters can be adjusted by the user when deploying a stack with
+# this template
+# ============================================================================ 
+Parameters:
+  MonitronDataExportStreamName:
+    Type: String
+    Default: 'MonitronDataExportStream'
+    Description: 'The name of the Kinesis data stream'
+  
+  MonitronProjectName:
+    Type: String
+    Description: 'The name of your Monitron Project you already setup with your Monitron sensors'
+
+  MonitronDataExportBucketName:
+    Type: String
+    Default: 'monitron-data-export-bucket'
+    Description: 'The name of the S3 bucket'
+    
+  UseExistingKinesisStreamParam:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: 'Enter "true" to use the existing Kinesis stream with the provided name. Enter "false" to create a new stream with the provided name.'
+    
+  UseExistingS3BucketParam:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: 'Enter "true" to use the existing S3 bucket with the provided name. Enter "false" to create a new bucket with the provided name.'
+    
+  UseBucketNameSuffixParam:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: 'Required if creating a new S3 bucket. Enter "true" to append suffix "_{region}_{account_id}" to the bucket name. Otherwise enter "false"'
+    
+Conditions:
+  UseBucketNameSuffix:
+    'Fn::Equals':
+      - {Ref: UseBucketNameSuffixParam}
+      - 'true'
+      
+  CreateNewKinesisStream:
+    'Fn::Equals':
+      - {Ref: UseExistingKinesisStreamParam}
+      - 'false'
+      
+  CreateNewS3Bucket:
+    'Fn::Equals':
+      - {Ref: UseExistingS3BucketParam}
+      - 'false'
+Resources:
+  MonitronDataExportStream:
+    Condition: CreateNewKinesisStream
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Ref MonitronDataExportStreamName
+      StreamModeDetails:
+        StreamMode: ON_DEMAND
+      StreamEncryption:
+        EncryptionType: KMS
+        KeyId: alias/aws/kinesis
+  
+  MonitronDataExportBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Condition: CreateNewS3Bucket
+    Properties:
+      BucketName:
+        Fn::If:
+          - UseBucketNameSuffix
+          - Fn::Join:
+              - ''
+              - - !Ref MonitronDataExportBucketName
+                - !Sub '-${AWS::Region}-${AWS::AccountId}'
+          - !Ref MonitronDataExportBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+   
+  MonitronDataExpoprtFirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${MonitronDataExportStreamName}FirehoseRole'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: ['sts:AssumeRole']
+            Effect: Allow
+            Principal:
+              Service: 'firehose.amazonaws.com'
+        Version: '2012-10-17'
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  Fn::If:
+                    - CreateNewS3Bucket
+                    - - Fn::Join:
+                          - ""
+                          - - !GetAtt MonitronDataExportBucket.Arn
+                            - "/*"
+                      - !GetAtt MonitronDataExportBucket.Arn
+                    - - Fn::Join:
+                          - ""
+                          - - 'arn:aws:s3:::'
+                            - Ref: MonitronDataExportBucketName
+                      - Fn::Join:
+                          - ""
+                          - - 'arn:aws:s3:::'
+                            - Ref: MonitronDataExportBucketName
+                            - "/*"
+              - Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                Resource: "*"
+          PolicyName: ReadWriteAccesstoS3
+        - PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kinesis:DescribeStream
+                  - kinesis:GetShardIterator
+                  - kinesis:GetRecords
+                  - kinesis:ListShards
+                Resource:
+                  Fn::If:
+                    - CreateNewKinesisStream
+                    - !GetAtt MonitronDataExportStream.Arn
+                    - !Sub 'arn:aws:kinesis:${AWS::Region}:${AWS::AccountId}:stream/${MonitronDataExportStreamName}'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "glue:GetTableVersions"
+                  - "glue:GetTables"
+                  - "glue:GetTable"
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                  - !Sub
+                    - "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/${DatabaseName}"
+                    - { DatabaseName: !Ref MonitronDataExportGlueDatabase }
+                  - !Sub
+                    - "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/${DatabaseName}/${DatabaseTableName}"
+                    - DatabaseName: !Ref MonitronDataExportGlueDatabase
+                      DatabaseTableName: !Ref MonitronDataExportGlueTable
+          PolicyName: AllowAccessToKinesisStream
+        - PolicyDocument:
+            Statement:
+              Effect: Allow
+              Action:
+                - logs:PutLogEvents
+              Resource:
+                - !GetAtt MonitronDataExportFirehoseS3DeliveryLogGroup.Arn
+          PolicyName: AllowToPutS3DeliveryEvents
+  
+  MonitronDataExportFirehoseS3DeliveryLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName:
+        Fn::Sub: /aws/kinesisfirehose/${MonitronDataExportStreamName}
+      RetentionInDays: 90
+
+  MonitronDataExportFirehoseS3DeliveryLogStream:
+    Type: 'AWS::Logs::LogStream'
+    Properties:
+      LogGroupName:
+        Ref: MonitronDataExportFirehoseS3DeliveryLogGroup
+
+  MonitronDataExportFirehose:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub '${MonitronDataExportStreamName}Firehose'
+      DeliveryStreamType: KinesisStreamAsSource
+      KinesisStreamSourceConfiguration:
+        KinesisStreamARN:
+          Fn::If:
+            - CreateNewKinesisStream
+            - !GetAtt MonitronDataExportStream.Arn
+            - !Sub 'arn:aws:kinesis:${AWS::Region}:${AWS::AccountId}:stream/${MonitronDataExportStreamName}'
+        RoleARN: !GetAtt MonitronDataExpoprtFirehoseRole.Arn
+      ExtendedS3DestinationConfiguration:
+        BucketARN:
+          Fn::If:
+            - CreateNewS3Bucket
+            - !GetAtt MonitronDataExportBucket.Arn
+            - !Sub 'arn:aws:s3:::${MonitronDataExportBucketName}'
+        RoleARN: !GetAtt MonitronDataExpoprtFirehoseRole.Arn
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 64
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName:
+            Ref: MonitronDataExportFirehoseS3DeliveryLogGroup
+          LogStreamName:
+            Ref: MonitronDataExportFirehoseS3DeliveryLogStream
+        Prefix: '!{partitionKeyFromQuery:project}/!{partitionKeyFromQuery:site}/!{partitionKeyFromQuery:time}/'
+        ErrorOutputPrefix: error/!{firehose:error-output-type}/dt=!{timestamp:yyyy'-'MM'-'dd}/h=!{timestamp:HH}/
+        DynamicPartitioningConfiguration:
+          Enabled: true
+          RetryOptions:
+            DurationInSeconds: 300
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            - Type: MetadataExtraction
+              Parameters:
+              - ParameterName: MetadataExtractionQuery
+                ParameterValue: '{project : .projectDisplayName| "project=\(.)", site : .siteDisplayName| "site=\(.)", time : .timestamp| sub("[0-9]{2}:[0-9]{2}:[0-9]{2}.[0-9]{3}$"; "00:00:00")| "time=\(.)"}'
+              - ParameterName: JsonParsingEngine
+                ParameterValue: JQ-1.6
+            - Type: AppendDelimiterToRecord
+              Parameters:
+              - ParameterName: Delimiter
+                ParameterValue: "\\n"   
+
+  MonitronDataExportGlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Sub ${AWS::AccountId}
+      DatabaseInput:
+        Description: Name of the Glue database
+        Name: !Sub firehose_glue_database_${AWS::Region}_${AWS::AccountId}
+
+  MonitronDataExportGlueTable:
+    DependsOn: MonitronDataExportGlueDatabase
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref MonitronDataExportGlueDatabase
+      TableInput:
+        Name: !Sub firehose_glue_table_${AWS::Region}_${AWS::AccountId}
+        Parameters: { "classification": "JSON" }
+        StorageDescriptor:
+          Columns:
+            - Name: timestamp
+              Type: string
+            - Name: eventid
+              Type: string
+            - Name: version
+              Type: string
+            - Name: accountid
+              Type: string
+            - Name: projectname
+              Type: string
+            - Name: eventtype
+              Type: string
+            - Name: eventpayload
+              Type:  struct<siteName:string,assetName:string,positionName:string,assetPositionURL:string,sensor:struct<physicalId:string,rssi:int>,gateway:struct<physicalId:string>,sequenceNo:int,features:struct<acceleration:struct<band0To6000Hz:struct<xAxis:struct<rms:double>,yAxis:struct<rms:double>,zAxis:struct<rms:double>>,band10To1000Hz:struct<totalVibration:struct<absMax:double,absMin:double,crestFactor:double,rms:double>,xAxis:struct<rms:double>,yAxis:struct<rms:double>,zAxis:struct<rms:double>>>,velocity:struct<band10To1000Hz:struct<totalVibration:struct<absMax:double,absMin:double,crestFactor:double,rms:double>,xAxis:struct<rms:double>,yAxis:struct<rms:double>,zAxis:struct<rms:double>>>,temperature:double>,models:struct<temperatureML:struct<previousPersistentClassificationOutput:string,persistentClassificationOutput:string,pointwiseClassificationOutput:string>,vibrationISO:struct<isoClass:string,mutedThreshold:string,previousPersistentClassificationOutput:string,persistentClassificationOutput:string,pointwiseClassificationOutput:string>,vibrationML:struct<previousPersistentClassificationOutput:string,persistentClassificationOutput:string,pointwiseClassificationOutput:string>>,gatewayName:string,gatewayListURL:string,assetTransitionType:string,assetState:struct<newState:string,previousState:string>,closureCode:struct<failureMode:string,failureCause:string,actionTaken:string,resolvedModels:array<string>>>
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          Location: !Sub
+            - "s3://${BucketName}/project=${monitronprojectname}"
+            - { BucketName: !Ref MonitronDataExportBucket, monitronprojectname: !Ref MonitronProjectName}
+          SerdeInfo:
+            Parameters: { "serialization.format": "1" }
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe 
+        PartitionKeys:
+        - Name: site
+          Type: string
+        - Name: time
+          Type: string
+        TableType: EXTERNAL_TABLE      
+  MyAthenaWorkGroup:
+    DependsOn: MonitronDataExportGlueTable
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: monitrondataexportquery
+      Description: Monitron Athena workgroup
+      State: ENABLED
+      RecursiveDeleteOption: True
+      WorkGroupConfiguration:
+        PublishCloudWatchMetricsEnabled: true
+        ResultConfiguration:
+          OutputLocation: !Sub
+            - "s3://${Bucket}/athenaquery/"
+            - { Bucket: !Ref MonitronDataExportBucket}
+
+Outputs:
+  S3BucketArn:
+    Description: The ARN of the S3 bucket
+    Value:
+      Fn::If:
+        - CreateNewS3Bucket
+        - !GetAtt MonitronDataExportBucket.Arn
+        - !Sub 'arn:aws:s3:::${MonitronDataExportBucketName}'
+  KinesisStreamArn:
+    Description: The ARN of the Kinesis data stream
+    Value:
+      Fn::If:
+        - CreateNewKinesisStream
+        - !GetAtt MonitronDataExportStream.Arn
+        - !Sub 'arn:aws:kinesis:${AWS::Region}:${AWS::AccountId}:stream/${MonitronDataExportStreamName}'
+  KinesisDeliveryStreamArn:
+    Description: The ARN of the Kinesis delivery stream
+    Value: !GetAtt MonitronDataExportFirehose.Arn
