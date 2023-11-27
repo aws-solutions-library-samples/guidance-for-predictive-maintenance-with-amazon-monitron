@@ -75,6 +75,7 @@ Resources:
   MonitronDataExportBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Condition: CreateNewS3Bucket
     Properties:
       BucketName:
@@ -245,7 +246,6 @@ Resources:
         Name: !Sub firehose_glue_database_${AWS::Region}_${AWS::AccountId}
 
   MonitronDataExportGlueTable:
-    DependsOn: MonitronDataExportGlueDatabase
     Type: AWS::Glue::Table
     Properties:
       CatalogId: !Ref AWS::AccountId
@@ -273,7 +273,7 @@ Resources:
           OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
           Location: !Sub
             - "s3://${BucketName}/project=${monitronprojectname}"
-            - { BucketName: !Ref MonitronDataExportBucket, monitronprojectname: !Ref MonitronProjectName}
+            - { BucketName: !Ref MonitronDataExportBucketName, monitronprojectname: !Ref MonitronProjectName}
           SerdeInfo:
             Parameters: { "serialization.format": "1" }
             SerializationLibrary: org.openx.data.jsonserde.JsonSerDe 
@@ -296,7 +296,7 @@ Resources:
         ResultConfiguration:
           OutputLocation: !Sub
             - "s3://${Bucket}/athenaquery/"
-            - { Bucket: !Ref MonitronDataExportBucket}
+            - { Bucket: !Ref MonitronDataExportBucketName}
 
 Outputs:
   S3BucketArn:
