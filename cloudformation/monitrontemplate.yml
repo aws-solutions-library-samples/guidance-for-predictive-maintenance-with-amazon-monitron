@@ -1,6 +1,5 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: >
-  Template to create a Monitron Kinesis stream pipeline
+Description: This template creates a Monitron Kinesis data stream pipeline per AWS Solution Guidance for Predictive Maintenance with Monitron (SO0061)
 # ============================================================================
 # CLOUDFORMATION TEMPLATE PARAMETERS
 # These parameters can be adjusted by the user when deploying a stack with
