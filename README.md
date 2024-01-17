@@ -10,7 +10,7 @@ From the operational technology (OT) team standpoint, using the Amazon Monitron 
 With the recently launched Amazon Monitron Kinesis data export v2 feature, your OT team can stream incoming measurement data and inference results from Amazon Monitron via Amazon Kinesis to AWS Simple Storage Service (Amazon S3) to build an Internet of Things (IoT) data lake. By leveraging the latest data export schema, you can obtain sensors connectivity status, gateways connectivity status, measurement classification results, closure reason code and details of asset state transition events.
 
 ## Architecture overview
-The solution you will build in this post combines Amazon Monitron, Kinesis Data Streams, Amazon Kinesis Data Firehose, Amazon S3, AWS Glue, Athena, and Amazon Managed Grafana.
+The guidance you will build in this post combines Amazon Monitron, Kinesis Data Streams, Amazon Kinesis Data Firehose, Amazon S3, AWS Glue, Athena, and Amazon Managed Grafana.
 
 The following diagram illustrates the solution architecture. Amazon Monitron sensors measure and detect anomalies from equipment. Both measurement data and ML inference outputs are exported at a frequency of once per hour to a Kinesis data stream, and they are delivered to Amazon S3 via Kinesis Data Firehose with a 1-minute buffer. The exported Amazon Monitron data is in JSON format. An AWS Glue crawler analyzes the Amazon Monitron data in Amazon S3 at a chosen frequency of once per hour, builds a metadata schema, and creates tables in Athena. Finally, Amazon Managed Grafana uses Athena to query the Amazon S3 data, allowing dashboards to be built to visualize both measurement data and device health status.
 
